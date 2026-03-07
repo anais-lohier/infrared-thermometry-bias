@@ -1,0 +1,484 @@
+---
+title: "Measurement Uncertainty and Demographic Encoding in Infrared Facial Thermometry"
+subtitle: "Reproducible Analysis"
+author: "Anaïs Lohier"
+format: 
+  html:
+    embed-resources: true
+    code-tools: true
+editor: source
+execute: 
+  error: true
+  echo: true
+  message: false
+  warning: false
+---
+
+## 1. Setup
+
+```{r libraries}
+library(dplyr)
+library(readr)
+library(tidyr)
+library(stringr)
+library(knitr)
+library(car)
+library(effectsize)
+library(ggplot2)
+library(patchwork)
+```
+
+## 2. Data Import and Cohort Construction
+
+```{r data-import}
+data <- read.csv("data_pre_processed.csv", stringsAsFactors = FALSE)
+
+# age midpoint helper (used for descriptive summaries)
+age_midpoint <- function(x) {
+  x <- str_trim(as.character(x))
+  x <- str_replace_all(x, "\u2013", "-")
+  m <- str_match(x, "^(\\d{1,2})\\s*-\\s*(\\d{1,2})$")
+  ifelse(is.na(m[, 1]), NA_real_, (as.numeric(m[, 2]) + as.numeric(m[, 3])) / 2)
+}
+
+# restrict to adults 18-30, exclude American Indian or Alaskan Native (n=3)
+analytic_rounds <- data |>
+  dplyr::filter(
+    Age %in% c("18-20", "21-25", "26-30", "21-30"),
+    Ethnicity != "American Indian or Alaskan Native"
+  )
+
+# analytic subset with participant-level means
+analytic_subset <- analytic_rounds |>
+  dplyr::select(SubjectID, T_CEmax_mean, T_max_mean, Age, Ethnicity, Gender)
+
+cat("N =", n_distinct(analytic_subset$SubjectID), "\n")
+```
+
+## 3. Round-Level Missingness (Table I)
+
+```{r missingness}
+round_vars <- c(
+  "canthiMax1", "T_Max1",
+  "canthiMax2", "T_Max2",
+  "canthiMax3", "T_Max3",
+  "canthiMax4", "T_Max4"
+)
+
+missing_counts <- sapply(analytic_rounds[round_vars], function(x) sum(is.na(x)))
+total_rows <- nrow(analytic_rounds)
+
+missing_rounds <- data.frame(
+  Measurement = round_vars,
+  Missing_obs = missing_counts,
+  Percent = round(100 * missing_counts / total_rows, 2)
+)
+
+kable(missing_rounds, row.names = FALSE,
+      caption = "Missing round-level observations (Table I)")
+```
+
+## 4. Within-Subject Repeatability
+
+```{r within-subject-repeatability}
+# T_CEmax: pooled within-subject SD
+within_sd_ce <- analytic_rounds |>
+  select(SubjectID, canthiMax1, canthiMax2, canthiMax3, canthiMax4) |>
+  pivot_longer(-SubjectID, values_to = "temp", values_drop_na = TRUE) |>
+  group_by(SubjectID) |>
+  filter(n() >= 2) |>
+  summarise(sd_within = sd(temp), .groups = "drop")
+
+pooled_sd_ce <- sqrt(mean(within_sd_ce$sd_within^2))
+
+# T_max: pooled within-subject SD
+within_sd_max <- analytic_rounds |>
+  select(SubjectID, T_Max1, T_Max2, T_Max3, T_Max4) |>
+  pivot_longer(-SubjectID, values_to = "temp", values_drop_na = TRUE) |>
+  group_by(SubjectID) |>
+  filter(n() >= 2) |>
+  summarise(sd_within = sd(temp), .groups = "drop")
+
+pooled_sd_max <- sqrt(mean(within_sd_max$sd_within^2))
+
+cat(sprintf("Pooled within-subject SD:\n  T_CEmax: %.2f °C\n  T_max:   %.2f °C\n",
+            pooled_sd_ce, pooled_sd_max))
+```
+
+## 5. Descriptive Statistics (Table II)
+
+```{r descriptives}
+desc_table <- analytic_subset |>
+  group_by(Ethnicity) |>
+  summarise(
+    n = n(),
+    male_pct = round(100 * sum(Gender == "Male", na.rm = TRUE) / n(), 0),
+    age_mean = mean(age_midpoint(Age), na.rm = TRUE),
+    age_sd = sd(age_midpoint(Age), na.rm = TRUE),
+    mean_CE = mean(T_CEmax_mean, na.rm = TRUE),
+    sd_CE = sd(T_CEmax_mean, na.rm = TRUE),
+    mean_max = mean(T_max_mean, na.rm = TRUE),
+    sd_max = sd(T_max_mean, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+kable(desc_table, digits = 2, caption = "Descriptive statistics (Table II)")
+
+cat(sprintf("\nOverall: age %.2f ± %.2f years; %d%% female\n",
+            mean(age_midpoint(analytic_subset$Age), na.rm = TRUE),
+            sd(age_midpoint(analytic_subset$Age), na.rm = TRUE),
+            round(100 * mean(analytic_subset$Gender == "Female", na.rm = TRUE))))
+```
+
+## 6. Statistical Assumptions
+
+```{r assumptions}
+# --- T_CEmax ---
+m1 <- aov(T_CEmax_mean ~ Ethnicity, data = analytic_subset)
+r1 <- residuals(m1)
+
+shapiro_ce <- shapiro.test(r1)
+bf_ce <- leveneTest(T_CEmax_mean ~ factor(Ethnicity),
+                    data = analytic_subset, center = median)
+
+# --- T_max ---
+m2 <- aov(T_max_mean ~ Ethnicity, data = analytic_subset)
+r2 <- residuals(m2)
+
+shapiro_max <- shapiro.test(r2)
+bf_max <- leveneTest(T_max_mean ~ factor(Ethnicity),
+                     data = analytic_subset, center = median)
+
+cat("T_CEmax assumptions:\n")
+cat(sprintf("  Shapiro-Wilk: W = %.5f, p < 0.001\n", shapiro_ce$statistic))
+cat(sprintf("  Brown-Forsythe: F(4,934) = %.2f, p = %.3f\n",
+            bf_ce$`F value`[1], bf_ce$`Pr(>F)`[1]))
+
+cat("\nT_max assumptions:\n")
+cat(sprintf("  Shapiro-Wilk: W = %.5f, p < 0.001\n", shapiro_max$statistic))
+cat(sprintf("  Brown-Forsythe: F(4,934) = %.2f, p = %.3f\n",
+            bf_max$`F value`[1], bf_max$`Pr(>F)`[1]))
+
+# Q-Q plots
+pdf(file.path("figures", "qq_combined.pdf"), width = 8, height = 4)
+par(mfrow = c(1, 2))
+qqnorm(r1, main = expression("Q-Q: " * T[CEmax])); qqline(r1)
+qqnorm(r2, main = expression("Q-Q: " * T[max])); qqline(r2)
+par(mfrow = c(1, 1))
+dev.off()
+```
+
+## 7. Primary Analysis: One-Way ANOVA
+
+```{r anova}
+# Inner-canthus
+model_ce <- aov(T_CEmax_mean ~ Ethnicity, data = analytic_subset)
+summary(model_ce)
+eta_squared(model_ce)
+
+# Full-face maximum
+model_max <- aov(T_max_mean ~ Ethnicity, data = analytic_subset)
+summary(model_max)
+eta_squared(model_max)
+```
+
+## 8. Figures
+
+### Figure 2: Violin Plot
+
+```{r figure-2}
+# summary statistics for overlay
+summary_long <- analytic_subset |>
+  group_by(Ethnicity) |>
+  summarise(
+    mean_CE = mean(T_CEmax_mean, na.rm = TRUE),
+    se_CE = sd(T_CEmax_mean, na.rm = TRUE) / sqrt(n()),
+    mean_max = mean(T_max_mean, na.rm = TRUE),
+    se_max = sd(T_max_mean, na.rm = TRUE) / sqrt(n()),
+    .groups = "drop"
+  ) |>
+  pivot_longer(
+    cols = c(mean_CE, mean_max),
+    names_to = "stat",
+    values_to = "mean"
+  ) |>
+  mutate(
+    se = ifelse(stat == "mean_CE", se_CE, se_max),
+    Metric = ifelse(stat == "mean_CE", "T[CEmax]", "T[max]"),
+    Metric = factor(Metric, levels = c("T[CEmax]", "T[max]"))
+  ) |>
+  select(Ethnicity, Metric, mean, se)
+
+summary_long2 <- summary_long |>
+  mutate(Ethnicity_wrapped = str_wrap(Ethnicity, 17))
+
+df_long <- analytic_subset |>
+  select(Ethnicity, T_CEmax_mean, T_max_mean) |>
+  pivot_longer(
+    cols = c(T_CEmax_mean, T_max_mean),
+    names_to = "Metric",
+    values_to = "Temperature"
+  ) |>
+  mutate(
+    Metric = case_match(Metric,
+      "T_CEmax_mean" ~ "T[CEmax]",
+      "T_max_mean" ~ "T[max]"
+    ),
+    Metric = factor(Metric, levels = c("T[CEmax]", "T[max]")),
+    Ethnicity_wrapped = str_wrap(as.character(Ethnicity), 17)
+  ) |>
+  drop_na()
+
+p_combined <- ggplot(df_long, aes(x = Ethnicity_wrapped, y = Temperature)) +
+  geom_violin(
+    aes(fill = Metric),
+    position = position_dodge(width = 0.70),
+    width = 0.85, alpha = 0.35, trim = TRUE, linewidth = 0.35
+  ) +
+  geom_boxplot(
+    aes(group = interaction(Ethnicity_wrapped, Metric)),
+    position = position_dodge(width = 0.70),
+    width = 0.12, outlier.shape = NA, alpha = 0.65, linewidth = 0.35
+  ) +
+  geom_point(
+    aes(color = Metric),
+    position = position_jitterdodge(jitter.width = 0.08, dodge.width = 0.70),
+    size = 0.6, alpha = 0.18
+  ) +
+  geom_errorbar(
+    data = summary_long2,
+    aes(y = mean, ymin = mean - 1.96 * se, ymax = mean + 1.96 * se, color = Metric),
+    position = position_dodge(width = 0.70),
+    width = 0.08, linewidth = 0.45
+  ) +
+  geom_point(
+    data = summary_long2,
+    aes(y = mean, fill = Metric),
+    position = position_dodge(width = 0.70),
+    shape = 21, color = "black", stroke = 0.25, size = 2.2
+  ) +
+  geom_hline(yintercept = 37, linetype = "dashed", linewidth = 0.5) +
+  labs(x = "Ethnicity", y = "Temperature (\u00B0C)") +
+  coord_cartesian(ylim = c(34, 39.2)) +
+  scale_fill_manual(
+    values = c("#3F6C8A", "#C05A46"),
+    labels = c(expression(T[CEmax]), expression(T[max]))
+  ) +
+  scale_color_manual(
+    values = c("#2E536B", "#8E3F32"),
+    labels = c(expression(T[CEmax]), expression(T[max]))
+  ) +
+  theme_classic(base_size = 11) +
+  theme(
+    legend.position = "top",
+    legend.title = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.major.y = element_line(linewidth = 0.25, color = "grey88")
+  )
+
+ggsave(file.path("figures", "mean_facial_temp_combined.pdf"),
+       plot = p_combined, width = 10, height = 5, dpi = 300)
+p_combined
+```
+
+### Figure 3: Monte Carlo Sensitivity
+
+```{r figure-3}
+set.seed(123)
+
+sim_anova <- function(df, outcome, group = "Ethnicity",
+                      sigmas = c(0.10, 0.15, 0.20, 0.30),
+                      B = 5000, alpha = 0.001) {
+  d0 <- df |> select(all_of(c(outcome, group))) |> drop_na()
+  d0[[group]] <- factor(d0[[group]])
+
+  base_means <- tapply(d0[[outcome]], d0[[group]], mean)
+  base_order <- names(sort(base_means))
+
+  out_list <- vector("list", length(sigmas))
+
+  for (i in seq_along(sigmas)) {
+    s <- sigmas[i]
+    pvals <- numeric(B)
+    etas <- numeric(B)
+    same_order <- logical(B)
+
+    for (b in seq_len(B)) {
+      y_star <- d0[[outcome]] + rnorm(nrow(d0), mean = 0, sd = s)
+      m <- aov(y_star ~ d0[[group]])
+      sm <- summary(m)[[1]]
+      pvals[b] <- sm[["Pr(>F)"]][1]
+      ss_between <- sm[["Sum Sq"]][1]
+      ss_total <- sum(sm[["Sum Sq"]], na.rm = TRUE)
+      etas[b] <- ss_between / ss_total
+      means_b <- tapply(y_star, d0[[group]], mean)
+      same_order[b] <- identical(names(sort(means_b)), base_order)
+    }
+
+    out_list[[i]] <- data.frame(
+      outcome = outcome, sigma = s, B = B,
+      p_sig = mean(pvals < alpha),
+      eta2_med = median(etas),
+      eta2_q05 = quantile(etas, 0.05),
+      eta2_q95 = quantile(etas, 0.95),
+      order_stable = mean(same_order)
+    )
+  }
+  bind_rows(out_list)
+}
+
+sim_ce <- sim_anova(analytic_subset, outcome = "T_CEmax_mean")
+sim_max <- sim_anova(analytic_subset, outcome = "T_max_mean")
+sim_results <- bind_rows(sim_ce, sim_max)
+
+kable(sim_results, digits = 3,
+      caption = "Monte Carlo sensitivity results")
+
+# relabel for plotting
+sim_results <- sim_results |>
+  mutate(outcome = case_match(outcome,
+    "T_CEmax_mean" ~ "T[CEmax]",
+    "T_max_mean" ~ "T[max]"
+  ))
+
+monte_carlo <- ggplot(sim_results,
+    aes(x = sigma, y = eta2_med, group = outcome,
+        color = outcome, fill = outcome)) +
+  geom_ribbon(aes(ymin = eta2_q05, ymax = eta2_q95),
+              alpha = 0.18, linewidth = 0, show.legend = FALSE) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 2) +
+  facet_wrap(~ outcome, labeller = label_parsed) +
+  labs(
+    x = expression(sigma ~ "(\u00B0C)"),
+    y = expression("Median " * eta^2 * " (5th-95th percentile)")
+  ) +
+  scale_color_manual(values = c("#3F6C8A", "#C05A46")) +
+  scale_fill_manual(values = c("#3F6C8A", "#C05A46")) +
+  theme_classic(base_size = 11) +
+  theme(
+    legend.position = "none",
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold"),
+    panel.grid.major.y = element_line(linewidth = 0.25, color = "grey88")
+  )
+
+ggsave(file.path("figures", "eta2_sensitivity.pdf"),
+       plot = monte_carlo, width = 7, height = 4.5, dpi = 300)
+monte_carlo
+```
+
+## 9. Model Evaluations
+```{r}
+# Make sure your filter now includes "21-30"
+analytic_subset <- data |>
+  dplyr::filter(
+    Age %in% c("18-20", "21-25", "26-30", "21-30"),
+    Ethnicity != "American Indian or Alaskan Native"
+  ) |>
+  dplyr::select(SubjectID, T_CEmax_mean, T_max_mean, Age, Ethnicity, Gender)
+
+cat("N =", nrow(analytic_subset), "\n")
+
+# T_CEmax assumptions
+m1 <- aov(T_CEmax_mean ~ Ethnicity, data = analytic_subset)
+r1 <- residuals(m1)
+
+sw1 <- shapiro.test(r1)
+bf1 <- car::leveneTest(T_CEmax_mean ~ factor(Ethnicity),
+                       data = analytic_subset, center = median)
+
+cat(sprintf("T_CEmax assumptions:\n  Shapiro-Wilk: W = %.5f, p %s\n",
+            sw1$statistic,
+            ifelse(sw1$p.value < 0.001, "< 0.001",
+                   sprintf("= %.3f", sw1$p.value))))
+cat(sprintf("  Brown-Forsythe: F(%d,%d) = %.2f, p = %.3f\n",
+            bf1$Df[1], bf1$Df[2], bf1$`F value`[1], bf1$`Pr(>F)`[1]))
+
+# T_max assumptions
+m2 <- aov(T_max_mean ~ Ethnicity, data = analytic_subset)
+r2 <- residuals(m2)
+
+sw2 <- shapiro.test(r2)
+bf2 <- car::leveneTest(T_max_mean ~ factor(Ethnicity),
+                       data = analytic_subset, center = median)
+
+cat(sprintf("\nT_max assumptions:\n  Shapiro-Wilk: W = %.5f, p %s\n",
+            sw2$statistic,
+            ifelse(sw2$p.value < 0.001, "< 0.001",
+                   sprintf("= %.3f", sw2$p.value))))
+cat(sprintf("  Brown-Forsythe: F(%d,%d) = %.2f, p = %.3f\n",
+            bf2$Df[1], bf2$Df[2], bf2$`F value`[1], bf2$`Pr(>F)`[1]))
+
+
+# Kruskal–Wallis
+
+# Inner-canthus
+kw_ce <- kruskal.test(T_CEmax_mean ~ factor(Ethnicity), data = analytic_subset)
+cat(sprintf("Kruskal-Wallis (T_CEmax): chi-squared = %.2f, df = %d, p = %.2e\n",
+            kw_ce$statistic, kw_ce$parameter, kw_ce$p.value))
+
+# Full-face maximum
+kw_max <- kruskal.test(T_max_mean ~ factor(Ethnicity), data = analytic_subset)
+cat(sprintf("Kruskal-Wallis (T_max):   chi-squared = %.2f, df = %d, p = %.2e\n",
+            kw_max$statistic, kw_max$parameter, kw_max$p.value))
+
+print(kw_ce)
+print(kw_max)
+```
+
+
+## Code Appendix - Linear Regressions
+```{r}
+## 11. Supplementary: Covariate-Adjusted Linear Regressions
+
+# Recode age bins to numeric midpoints for regression
+analytic_subset <- analytic_subset |>
+  mutate(
+    age_mid = case_match(Age,
+      "18-20" ~ 19,
+      "21-25" ~ 23,
+      "26-30" ~ 28,
+      "21-30" ~ 25.5
+    ),
+    Gender = factor(Gender),
+    Ethnicity = factor(Ethnicity)
+  )
+
+# --- T_CEmax: unadjusted vs adjusted ---
+lm_ce_unadj <- lm(T_CEmax_mean ~ Ethnicity, data = analytic_subset)
+lm_ce_adj   <- lm(T_CEmax_mean ~ Ethnicity + age_mid + Gender, data = analytic_subset)
+
+cat("=== T_CEmax: Unadjusted ===\n")
+summary(lm_ce_unadj)
+cat("\n=== T_CEmax: Adjusted for age + gender ===\n")
+summary(lm_ce_adj)
+
+# Compare models
+cat("\nANOVA: unadjusted vs adjusted (T_CEmax)\n")
+anova(lm_ce_unadj, lm_ce_adj)
+
+# --- T_max: unadjusted vs adjusted ---
+lm_max_unadj <- lm(T_max_mean ~ Ethnicity, data = analytic_subset)
+lm_max_adj   <- lm(T_max_mean ~ Ethnicity + age_mid + Gender, data = analytic_subset)
+
+cat("\n=== T_max: Unadjusted ===\n")
+summary(lm_max_unadj)
+cat("\n=== T_max: Adjusted for age + gender ===\n")
+summary(lm_max_adj)
+
+cat("\nANOVA: unadjusted vs adjusted (T_max)\n")
+anova(lm_max_unadj, lm_max_adj)
+
+# --- Effect size comparison ---
+cat("\n=== Eta-squared comparison ===\n")
+cat("T_CEmax unadjusted:\n")
+eta_squared(lm_ce_unadj)
+cat("T_CEmax adjusted:\n")
+eta_squared(lm_ce_adj, partial = TRUE)
+cat("T_max unadjusted:\n")
+eta_squared(lm_max_unadj)
+cat("T_max adjusted:\n")
+eta_squared(lm_max_adj, partial = TRUE)
+```
+
