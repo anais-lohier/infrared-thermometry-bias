@@ -1,5 +1,3 @@
-# Measurement Uncertainty and Demographic Encoding in Infrared Facial Thermometry
-
 This repository contains the analysis code for the retrospective study examining the relationship between administratively encoded ethnicity and facial infrared temperature measurements.
 
 ## Project Overview
