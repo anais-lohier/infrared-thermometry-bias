@@ -482,3 +482,33 @@ cat("T_max adjusted:\n")
 eta_squared(lm_max_adj, partial = TRUE)
 ```
 
+## Code Appendix - Complete-Cases Sensitivity Analysis
+```{r}
+# Restrict to participants with all four rounds observed for both outcomes
+complete_cases <- analytic_rounds |>
+  filter(
+    !is.na(canthiMax1), !is.na(canthiMax2), !is.na(canthiMax3), !is.na(canthiMax4),
+    !is.na(T_Max1),     !is.na(T_Max2),     !is.na(T_Max3),     !is.na(T_Max4)
+  ) |>
+  select(SubjectID, T_CEmax_mean, T_max_mean, Age, Ethnicity, Gender)
+
+cat("Complete-cases N =", n_distinct(complete_cases$SubjectID),
+    "vs full analytic cohort N =", n_distinct(analytic_subset$SubjectID), "\n")
+
+# ANOVA on complete cases
+m_ce_cc  <- aov(T_CEmax_mean ~ Ethnicity, data = complete_cases)
+m_max_cc <- aov(T_max_mean   ~ Ethnicity, data = complete_cases)
+
+cat("\n=== T_CEmax: Complete cases ===\n"); summary(m_ce_cc);  eta_squared(m_ce_cc)
+cat("\n=== T_max:   Complete cases ===\n"); summary(m_max_cc); eta_squared(m_max_cc)
+
+# Compare eta-squared to full cohort
+cat("\nEta-squared comparison (full vs complete cases):\n")
+cat(sprintf("  T_CEmax: full = %.3f | complete = %.3f\n",
+            eta_squared(aov(T_CEmax_mean ~ Ethnicity, data = analytic_subset))$Eta2,
+            eta_squared(m_ce_cc)$Eta2))
+cat(sprintf("  T_max:   full = %.3f | complete = %.3f\n",
+            eta_squared(aov(T_max_mean ~ Ethnicity, data = analytic_subset))$Eta2,
+            eta_squared(m_max_cc)$Eta2))
+```
+
